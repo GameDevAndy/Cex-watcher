@@ -13,18 +13,30 @@ WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 
 def get_page_text():
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        page = browser.new_page()
-        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(5000)
+        browser = p.chromium.launch(
+            headless=True,
+            args=["--disable-blink-features=AutomationControlled"]
+        )
 
-        # visible page text only
+        context = browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            locale="en-GB",
+            viewport={"width": 1280, "height": 800}
+        )
+
+        page = context.new_page()
+
+        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+
+        # wait for cloudflare check
+        page.wait_for_timeout(10000)
+
         text = page.locator("body").inner_text()
 
-        # optional screenshot for debugging
         page.screenshot(path="debug.png", full_page=True)
 
         browser.close()
+
         return text
 
 
