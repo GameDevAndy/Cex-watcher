@@ -26,30 +26,31 @@ def get_page_text():
 
         page = context.new_page()
 
-        page.goto(URL, timeout=60000)
+        all_items = []
 
-        # accept cookie popup if present
-        try:
-            page.get_by_text("Accept All").click(timeout=5000)
-        except:
-            pass
+        for page_num in range(1, 6):  # pages 1–5
+            url = f"{URL}&page={page_num}"
 
-        page.wait_for_timeout(5000)
+            page.goto(url, timeout=60000)
 
-        products = page.locator("div[data-testid='product-card']").all()
+            try:
+                page.get_by_text("Accept All").click(timeout=3000)
+            except:
+                pass
 
-        items = []
+            page.wait_for_timeout(3000)
 
-        for p in products:
-            text = p.inner_text()
-            items.append(text)
+            products = page.locator("div[data-testid='product-card']").all()
+
+            for p in products:
+                text = p.inner_text()
+                all_items.append(text)
 
         page.screenshot(path="debug.png", full_page=True)
 
         browser.close()
 
-        return "\n".join(items)
-
+        return "\n".join(all_items)
 
 def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
