@@ -6,7 +6,7 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright
 
-URL = "https://uk.webuy.com/search?stext=psp"
+URL = "https://uk.webuy.com/search?stext=psp&stores=Edinburgh~Edinburgh+Cameron+Toll~Leith+Edinburgh"
 STATE_FILE = Path("state.json")
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 
