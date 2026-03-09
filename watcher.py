@@ -11,6 +11,16 @@ STATE_FILE = Path("state.json")
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 
 
+from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
+
+def build_page_url(base_url: str, page_num: int) -> str:
+    parsed = urlparse(base_url)
+    query = parse_qs(parsed.query)
+    query["page"] = [str(page_num)]
+    new_query = urlencode(query, doseq=True)
+    return urlunparse(parsed._replace(query=new_query))
+
+
 def get_page_text():
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -21,33 +31,64 @@ def get_page_text():
         context = browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
             locale="en-GB",
-            viewport={"width":1280,"height":900}
+            viewport={"width": 1280, "height": 900}
         )
 
         page = context.new_page()
-
         all_items = []
 
-        for page_num in range(1, 6):  # pages 1–5
-            url = f"{URL}&page={page_num}"
+        # Load first page
+        page.goto(build_page_url(URL, 1), timeout=60000)
+
+        try:
+            page.get_by_text("Accept All").click(timeout=5000)
+        except:
+            pass
+
+        page.wait_for_timeout(4000)
+
+        # Detect page count from pagination links
+        page_count = 1
+        try:
+            links = page.locator("a").all()
+            nums = []
+
+            for link in links:
+                try:
+                    text = link.inner_text().strip()
+                    if text.isdigit():
+                        nums.append(int(text))
+                except:
+                    pass
+
+            if nums:
+                page_count = max(nums)
+        except:
+            pass
+
+        print(f"Detected {page_count} page(s)")
+
+        # Scrape all pages
+        for page_num in range(1, page_count + 1):
+            url = build_page_url(URL, page_num)
+            print(f"Checking page {page_num}: {url}")
 
             page.goto(url, timeout=60000)
-
-            try:
-                page.get_by_text("Accept All").click(timeout=3000)
-            except:
-                pass
-
             page.wait_for_timeout(3000)
 
             products = page.locator("div[data-testid='product-card']").all()
 
-            for p in products:
-                text = p.inner_text()
-                all_items.append(text)
+            print(f"Found {len(products)} products on page {page_num}")
+
+            for product in products:
+                try:
+                    text = product.inner_text().strip()
+                    if text:
+                        all_items.append(text)
+                except:
+                    pass
 
         page.screenshot(path="debug.png", full_page=True)
-
         browser.close()
 
         return "\n".join(all_items)
