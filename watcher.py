@@ -39,7 +39,12 @@ def extract_title(text: str) -> str:
 
         if line.startswith("£"):
             continue
-        if lower in {"5 year warranty", "add to basket"}:
+        if lower in {
+            "5 year warranty",
+            "add to basket",
+            "add to wishlist",
+            "wishlist",
+        }:
             continue
         if lower.replace(".", "", 1).isdigit():
             continue
@@ -49,6 +54,45 @@ def extract_title(text: str) -> str:
         filtered.append(line)
 
     return filtered[0] if filtered else "Unknown item"
+
+
+def dismiss_cookie_banner(page):
+    try:
+        accept_button = page.get_by_role("button", name="Accept All")
+        accept_button.wait_for(timeout=10000)
+        accept_button.click(force=True)
+        page.wait_for_timeout(2000)
+    except Exception as e:
+        print(f"Cookie banner not dismissed on click attempt: {e}")
+
+    try:
+        page.get_by_role("button", name="Accept All").wait_for(
+            state="hidden",
+            timeout=5000,
+        )
+        print("Cookie banner dismissed")
+    except Exception:
+        print("Cookie banner still visible")
+
+
+def get_page_count(page) -> int:
+    page_count = 1
+    try:
+        nums = []
+        links = page.locator("a").all()
+        for link in links:
+            try:
+                text = link.inner_text().strip()
+                if text.isdigit():
+                    nums.append(int(text))
+            except Exception:
+                pass
+        if nums:
+            page_count = max(nums)
+    except Exception:
+        pass
+
+    return page_count
 
 
 def get_page_items():
@@ -64,49 +108,19 @@ def get_page_items():
             viewport={"width": 1280, "height": 900}
         )
 
-page = context.new_page()
-page.goto(build_page_url(URL, 1), timeout=60000)
+        page = context.new_page()
+        page.goto(build_page_url(URL, 1), timeout=60000)
 
-try:
-    accept_button = page.get_by_role("button", name="Accept All")
-    accept_button.wait_for(timeout=10000)
-    accept_button.click()
-    page.wait_for_timeout(2000)
-except Exception as e:
-    print(f"Cookie banner not dismissed: {e}")
+        dismiss_cookie_banner(page)
+        page.wait_for_timeout(4000)
 
-try:
-    page.get_by_role("button", name="Accept All").wait_for(state="hidden", timeout=5000)
-    print("Cookie banner dismissed")
-except Exception:
-    print("Cookie banner still visible")
-
-page.wait_for_timeout(4000)
-
-except Exception as e:
-    print(f"Cookie banner not dismissed: {e}")
         body_text = page.locator("body").inner_text()
         if "Performing security verification" in body_text or "Verify you are human" in body_text:
             page.screenshot(path="debug.png", full_page=True)
             browser.close()
             raise RuntimeError("Blocked by Cloudflare")
 
-        page_count = 1
-        try:
-            nums = []
-            links = page.locator("a").all()
-            for link in links:
-                try:
-                    text = link.inner_text().strip()
-                    if text.isdigit():
-                        nums.append(int(text))
-                except Exception:
-                    pass
-            if nums:
-                page_count = max(nums)
-        except Exception:
-            pass
-
+        page_count = get_page_count(page)
         print(f"Detected {page_count} page(s)")
 
         all_items = []
@@ -116,6 +130,7 @@ except Exception as e:
             print(f"Checking page {page_num}: {url}")
 
             page.goto(url, timeout=60000)
+            dismiss_cookie_banner(page)
             page.wait_for_timeout(3000)
 
             products = page.locator("div[data-testid='product-card']").all()
