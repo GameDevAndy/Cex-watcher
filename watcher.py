@@ -72,6 +72,11 @@ def notify():
 
 def main():
     new_text = get_page_text()
+
+    if "Performing security verification" in new_text or "Verify you are human" in new_text:
+        print("Blocked by Cloudflare - not saving state")
+        return
+
     new_hash = digest(new_text)
     old = load_old()
 
