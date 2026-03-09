@@ -256,7 +256,30 @@ def format_message(added, removed, price_changed):
 
 
 def main():
-    send_discord_message("Test message from CeX watcher")
-    print("Sent test Discord message")
+    try:
+        new_items = get_page_items()
+    except Exception as e:
+        print(f"Run failed: {e}")
+        return
+
+    old_items = load_old()
+
+    if not old_items:
+        print("First run: saving baseline")
+        save_state(new_items)
+        return
+
+    added, removed, price_changed = diff_items(old_items, new_items)
+
+    if added or removed or price_changed:
+        print("Change detected")
+        message = format_message(added, removed, price_changed)
+        if message:
+            send_discord_message(message)
+        save_state(new_items)
+    else:
+        print("No change")
+
+
 if __name__ == "__main__":
     main()
