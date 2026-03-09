@@ -1,10 +1,9 @@
 name: CeX Watcher
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 * * * *"
-
+    - cron: "*/20 8-19 * * *"
+  workflow_dispatch:
 jobs:
   run:
     runs-on: ubuntu-latest
