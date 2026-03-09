@@ -64,17 +64,27 @@ def get_page_items():
             viewport={"width": 1280, "height": 900}
         )
 
-        page = context.new_page()
+page = context.new_page()
+page.goto(build_page_url(URL, 1), timeout=60000)
 
-        page.goto(build_page_url(URL, 1), timeout=60000)
+try:
+    accept_button = page.get_by_role("button", name="Accept All")
+    accept_button.wait_for(timeout=10000)
+    accept_button.click()
+    page.wait_for_timeout(2000)
+except Exception as e:
+    print(f"Cookie banner not dismissed: {e}")
 
-        try:
-            page.get_by_text("Accept All").click(timeout=5000)
-        except Exception:
-            pass
+try:
+    page.get_by_role("button", name="Accept All").wait_for(state="hidden", timeout=5000)
+    print("Cookie banner dismissed")
+except Exception:
+    print("Cookie banner still visible")
 
-        page.wait_for_timeout(4000)
+page.wait_for_timeout(4000)
 
+except Exception as e:
+    print(f"Cookie banner not dismissed: {e}")
         body_text = page.locator("body").inner_text()
         if "Performing security verification" in body_text or "Verify you are human" in body_text:
             page.screenshot(path="debug.png", full_page=True)
