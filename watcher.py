@@ -19,25 +19,36 @@ def get_page_text():
         )
 
         context = browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
             locale="en-GB",
-            viewport={"width": 1280, "height": 800}
+            viewport={"width":1280,"height":900}
         )
 
         page = context.new_page()
 
-        page.goto(URL, wait_until="domcontentloaded", timeout=60000)
+        page.goto(URL, timeout=60000)
 
-        # wait for cloudflare check
-        page.wait_for_timeout(10000)
+        # accept cookie popup if present
+        try:
+            page.get_by_text("Accept All").click(timeout=5000)
+        except:
+            pass
 
-        text = page.locator("body").inner_text()
+        page.wait_for_timeout(5000)
+
+        products = page.locator("div[data-testid='product-card']").all()
+
+        items = []
+
+        for p in products:
+            text = p.inner_text()
+            items.append(text)
 
         page.screenshot(path="debug.png", full_page=True)
 
         browser.close()
 
-        return text
+        return "\n".join(items)
 
 
 def digest(text: str) -> str:
