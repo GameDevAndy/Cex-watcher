@@ -2,7 +2,8 @@ name: CeX Watcher
 
 on:
   schedule:
-    - cron: "*/20 8-19 * * *"
+    - cron: "7,27,47 9-18 * * *"
+    - cron: "0 19 * * *"
   workflow_dispatch:
 jobs:
   run:
