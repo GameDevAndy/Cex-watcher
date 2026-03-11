@@ -85,12 +85,20 @@ def get_page_count(page) -> int:
 def scrape_products_from_page(page):
     raw = page.evaluate("""
     () => {
-        return Array.from(document.querySelectorAll('a[href]')).map(a => {
+        const productLinks = Array.from(document.querySelectorAll('a[href*="/product-detail?id="]'));
+
+        return productLinks.map(a => {
             const href = a.getAttribute('href') || '';
             const text = (a.innerText || a.textContent || '').trim();
 
-            let container = a.closest('article') || a.closest('li') || a.parentElement;
-            let containerText = container ? (container.innerText || container.textContent || '').trim() : '';
+            let container =
+                a.closest('article') ||
+                a.closest('li') ||
+                a.parentElement;
+
+            let containerText = container
+                ? (container.innerText || container.textContent || '').trim()
+                : '';
 
             return {
                 href,
@@ -101,53 +109,38 @@ def scrape_products_from_page(page):
     }
     """)
 
-    print(f"Found {len(raw)} total links on page")
+    print(f"Found {len(raw)} product-detail links on page")
 
     items = []
     seen = set()
 
     for i, row in enumerate(raw):
         href = row.get("href", "")
-        text = row.get("text", "")
-        container_text = row.get("containerText", "")
+        text = (row.get("text", "") or "").strip()
+        container_text = (row.get("containerText", "") or "").strip()
 
         if not href:
             continue
 
         full_url = urljoin(BASE_URL, href)
-        lower_url = full_url.lower()
-        lower_block = container_text.lower()
 
-        # Debug first links so we can see what CeX is actually rendering
         if i < 25:
-            print(f"DEBUG LINK {i}: href={full_url} | text={text[:80]!r}")
+            print(f"DEBUG PRODUCT {i}: href={full_url} | text={text[:80]!r}")
 
-        # Reject obvious non-product links
-        if any(x in lower_url for x in [
-            "/search", "/sell", "/basket", "/wishlist", "/login",
-            "/register", "/account", "/stores", "/repairs",
-            "/contact", "/support", "/faq", "/voucher",
-            "/checkout", "/cdn-cgi/"
-        ]):
+        # Skip the duplicate empty-text link; keep the titled one
+        if not text:
             continue
 
-        # Reject junk rows CeX injects
-        if text.strip().lower() in {"nearest store:", "nearest store"}:
-            continue
-
-        if lower_block.startswith("nearest store:"):
-            continue
-
-        # Only keep PSP-related blocks
-        if "psp" not in lower_block:
+        title = clean_title(text)
+        if title == "Unknown item":
             continue
 
         price = extract_price(container_text)
         if price < 0:
-            continue
+            # fallback: inspect a slightly larger nearby block in JS
+            price = extract_price(text)
 
-        title = clean_title(text or container_text)
-        if title == "Unknown item":
+        if price < 0:
             continue
 
         if full_url in seen:
