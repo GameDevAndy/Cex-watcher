@@ -106,7 +106,7 @@ def scrape_products_from_page(page):
     items = []
     seen = set()
 
-    for row in raw:
+    for i, row in enumerate(raw):
         href = row.get("href", "")
         text = row.get("text", "")
         container_text = row.get("containerText", "")
@@ -118,13 +118,27 @@ def scrape_products_from_page(page):
         lower_url = full_url.lower()
         lower_block = container_text.lower()
 
+        # Debug first links so we can see what CeX is actually rendering
+        if i < 25:
+            print(f"DEBUG LINK {i}: href={full_url} | text={text[:80]!r}")
+
+        # Reject obvious non-product links
         if any(x in lower_url for x in [
             "/search", "/sell", "/basket", "/wishlist", "/login",
             "/register", "/account", "/stores", "/repairs",
-            "/contact", "/support", "/faq", "/voucher", "/checkout"
+            "/contact", "/support", "/faq", "/voucher",
+            "/checkout", "/cdn-cgi/"
         ]):
             continue
 
+        # Reject junk rows CeX injects
+        if text.strip().lower() in {"nearest store:", "nearest store"}:
+            continue
+
+        if lower_block.startswith("nearest store:"):
+            continue
+
+        # Only keep PSP-related blocks
         if "psp" not in lower_block:
             continue
 
@@ -140,6 +154,7 @@ def scrape_products_from_page(page):
             continue
 
         seen.add(full_url)
+
         items.append({
             "id": full_url,
             "title": title,
