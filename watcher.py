@@ -2,7 +2,13 @@ import os
 import re
 import json
 from pathlib import Path
-from urllib.parse import urlencode, urlparse, parse_qs, urlunparse, urljoin
+from urllib.parse import (
+    urlencode,
+    urlparse,
+    parse_qs,
+    urlunparse,
+    urljoin,
+)
 
 import requests
 from playwright.sync_api import sync_playwright
@@ -29,12 +35,14 @@ def extract_price(text: str) -> float:
         return float(match.group(1).replace(",", ""))
     except ValueError:
         return -1.0
-        
+
+
 def extract_store(text: str) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
 
     for i, line in enumerate(lines):
         lower = line.lower()
+
         if lower in {"nearest store:", "nearest store"}:
             if i + 1 < len(lines):
                 return lines[i + 1]
@@ -45,6 +53,7 @@ def extract_store(text: str) -> str:
                 return parts[1].strip()
 
     return "Unknown store"
+
 
 def clean_title(text: str) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -69,6 +78,12 @@ def clean_title(text: str) -> str:
     return filtered[0] if filtered else "Unknown item"
 
 
+def normalise_product_id(product_url: str) -> str:
+    parsed = urlparse(product_url)
+    query = parse_qs(parsed.query)
+    return query.get("id", [product_url])[0]
+
+
 def dismiss_cookie_banner(page):
     try:
         btn = page.get_by_role("button", name="Accept All")
@@ -81,6 +96,7 @@ def dismiss_cookie_banner(page):
 
 def get_page_count(page) -> int:
     nums = set()
+
     try:
         hrefs = page.locator("a[href*='page=']").evaluate_all(
             "(els) => els.map(e => e.getAttribute('href')).filter(Boolean)"
@@ -96,10 +112,6 @@ def get_page_count(page) -> int:
 
     return max(nums) if nums else 1
 
-def normalise_product_id(product_url: str) -> str:
-    parsed = urlparse(product_url)
-    query = parse_qs(parsed.query)
-    return query.get("id", [product_url])[0]
 
 def scrape_products_from_page(page):
     raw = page.evaluate("""
@@ -163,7 +175,6 @@ def scrape_products_from_page(page):
             continue
 
         store = extract_store(block_text)
-
         product_id = normalise_product_id(full_url)
 
         if product_id in seen:
@@ -180,7 +191,10 @@ def scrape_products_from_page(page):
         })
 
     for item in items[:5]:
-        print(f"Sample page item: {item['title']} | £{item['price']:.2f} | {item['url']}")
+        print(
+            f"Sample page item: {item['title']} | £{item['price']:.2f} | "
+            f"{item['store']} | {item['url']}"
+        )
 
     return items
 
@@ -251,7 +265,10 @@ def get_page_items():
     print(f"Total scraped items after dedupe: {len(deduped)}")
 
     for item in deduped[:5]:
-        print(f"Sample item: {item['title']} | £{item['price']:.2f} | {item['url']}")
+        print(
+            f"Sample item: {item['title']} | £{item['price']:.2f} | "
+            f"{item['store']} | {item['url']}"
+        )
 
     return deduped
 
@@ -288,28 +305,47 @@ def send_discord_message(message: str):
         print(f"Failed to send Discord message: {e}")
 
 
-changes = []
+def diff_items(old_items, new_items):
+    old_by_id = {item["id"]: item for item in old_items}
+    new_by_id = {item["id"]: item for item in new_items}
+
+    added = []
+    removed = []
+    price_changed = []
+
+    for item_id in new_by_id:
+        if item_id not in old_by_id:
+            added.append(new_by_id[item_id])
+
+    for item_id in old_by_id:
+        if item_id not in new_by_id:
+            removed.append(old_by_id[item_id])
+
     for item_id in set(old_by_id.keys()) & set(new_by_id.keys()):
-        old_price = old_by_id[item_id]["price"]
-        new_price = new_by_id[item_id]["price"]
-        old_store = old_by_id[item_id].get("store", "Unknown store")
-        new_store = new_by_id[item_id].get("store", "Unknown store")
+        old_item = old_by_id[item_id]
+        new_item = new_by_id[item_id]
+
+        old_price = old_item["price"]
+        new_price = new_item["price"]
+
+        old_store = old_item.get("store", "Unknown store")
+        new_store = new_item.get("store", "Unknown store")
 
         if old_price != new_price or old_store != new_store:
-            changes.append({
-                "title": new_by_id[item_id]["title"],
-                "url": new_by_id[item_id]["url"],
+            price_changed.append({
+                "title": new_item["title"],
+                "url": new_item["url"],
                 "old_price": old_price,
                 "new_price": new_price,
                 "old_store": old_store,
                 "new_store": new_store,
             })
 
-    added = sorted([new_by_id[i] for i in added_ids], key=lambda x: (-x["price"], x["title"].lower(), x["id"]))
-    removed = sorted([old_by_id[i] for i in removed_ids], key=lambda x: (-x["price"], x["title"].lower(), x["id"]))
-    price_changed = sorted(price_changed, key=lambda x: (-x["new_price"], x["title"].lower(), x["url"]))
+    added.sort(key=lambda x: (-x["price"], x["title"].lower(), x["id"]))
+    removed.sort(key=lambda x: (-x["price"], x["title"].lower(), x["id"]))
+    price_changed.sort(key=lambda x: (-x["new_price"], x["title"].lower()))
 
-    return added, removed, changed
+    return added, removed, price_changed
 
 
 def format_message(added, removed, price_changed):
@@ -338,7 +374,6 @@ def format_message(added, removed, price_changed):
         for item in price_changed[:15]:
             old_store = item.get("old_store", "Unknown store")
             new_store = item.get("new_store", "Unknown store")
-
             lines.append(
                 f"{item['title']} — £{item['old_price']:.2f} → £{item['new_price']:.2f} | {old_store} → {new_store}"
             )
@@ -349,6 +384,7 @@ def format_message(added, removed, price_changed):
         return ""
 
     return "**CeX PSP update**\n\n" + "\n\n".join(parts)
+
 
 def main():
     try:
@@ -369,7 +405,10 @@ def main():
 
     added, removed, price_changed = diff_items(old_items, new_items)
 
-    print(f"Added: {len(added)}, Removed: {len(removed)}, Price changed: {len(price_changed)}")
+    print(
+        f"Added: {len(added)}, Removed: {len(removed)}, "
+        f"Price changed: {len(price_changed)}"
+    )
 
     if added or removed or price_changed:
         print("Change detected")
