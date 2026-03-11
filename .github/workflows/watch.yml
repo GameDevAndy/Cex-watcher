@@ -40,6 +40,7 @@ jobs:
 
       - name: Run watcher
         run: python watcher.py
+        timeout-minutes: 4
         env:
           DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
 
