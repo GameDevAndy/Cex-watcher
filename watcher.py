@@ -81,6 +81,10 @@ def get_page_count(page) -> int:
 
     return max(nums) if nums else 1
 
+def normalise_product_id(product_url: str) -> str:
+    parsed = urlparse(product_url)
+    query = parse_qs(parsed.query)
+    return query.get("id", [product_url])[0]
 
 def scrape_products_from_page(page):
     raw = page.evaluate("""
@@ -143,16 +147,19 @@ def scrape_products_from_page(page):
         if price < 0:
             continue
 
-        if full_url in seen:
-            continue
+        product_id = normalise_product_id(full_url)
 
-        seen.add(full_url)
-        items.append({
-            "id": full_url,
-            "title": title,
-            "price": price,
-            "url": full_url,
-        })
+if product_id in seen:
+    continue
+
+seen.add(product_id)
+
+items.append({
+    "id": product_id,
+    "title": title,
+    "price": price,
+    "url": full_url,
+})
 
     for item in items[:5]:
         print(f"Sample page item: {item['title']} | £{item['price']:.2f} | {item['url']}")
