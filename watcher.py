@@ -33,6 +33,7 @@ def extract_price(text: str) -> float:
 
 def clean_title(text: str) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+
     junk = {
         "add to basket",
         "add to wishlist",
@@ -40,16 +41,18 @@ def clean_title(text: str) -> str:
         "5 year warranty",
     }
 
-    cleaned = []
+    filtered = []
     for line in lines:
         lower = line.lower()
         if lower in junk:
             continue
         if line.startswith("£"):
             continue
-        cleaned.append(line)
+        if lower.startswith("from £"):
+            continue
+        filtered.append(line)
 
-    return cleaned[0] if cleaned else "Unknown item"
+    return filtered[0] if filtered else "Unknown item"
 
 
 def dismiss_cookie_banner(page):
@@ -66,9 +69,10 @@ def get_page_count(page) -> int:
     nums = set()
 
     try:
-        for href in page.locator("a[href*='page=']").evaluate_all(
+        hrefs = page.locator("a[href*='page=']").evaluate_all(
             "(els) => els.map(e => e.getAttribute('href')).filter(Boolean)"
-        ):
+        )
+        for href in hrefs:
             parsed = urlparse(href)
             query = parse_qs(parsed.query)
             for val in query.get("page", []):
@@ -80,14 +84,57 @@ def get_page_count(page) -> int:
     return max(nums) if nums else 1
 
 
-def is_product_href(href: str) -> bool:
-    if not href:
-        return False
+def is_obvious_non_product_link(href: str) -> bool:
     href_lower = href.lower()
-    return (
-        "/product-detail" in href_lower
-        or "/product/" in href_lower
-    )
+
+    bad_starts = ("#", "javascript:", "mailto:", "tel:")
+    if href_lower.startswith(bad_starts):
+        return True
+
+    bad_parts = [
+        "/search",
+        "/sell",
+        "/basket",
+        "/wishlist",
+        "/login",
+        "/register",
+        "/account",
+        "/site/",
+        "/stores",
+        "/repairs",
+        "/contact",
+        "/support",
+        "/faq",
+        "/voucher",
+        "/cart",
+        "/checkout",
+    ]
+
+    return any(part in href_lower for part in bad_parts)
+
+
+def get_candidate_block_text(link):
+    xpaths = [
+        "xpath=ancestor::article[1]",
+        "xpath=ancestor::li[1]",
+        "xpath=ancestor::div[contains(@class, 'product')][1]",
+        "xpath=ancestor::div[contains(@class, 'card')][1]",
+        "xpath=ancestor::div[2]",
+        "xpath=ancestor::div[1]",
+    ]
+
+    for xp in xpaths:
+        try:
+            text = link.locator(xp).inner_text(timeout=1500).strip()
+            if text:
+                return text
+        except Exception:
+            pass
+
+    try:
+        return link.inner_text(timeout=1500).strip()
+    except Exception:
+        return ""
 
 
 def scrape_products_from_page(page):
@@ -98,42 +145,56 @@ def scrape_products_from_page(page):
     print(f"Found {count} total links on page")
 
     seen_ids = set()
+    debug_printed = 0
 
     for i in range(count):
         try:
             link = link_locator.nth(i)
             href = link.get_attribute("href")
-            if not is_product_href(href):
+
+            if not href:
                 continue
 
             full_url = urljoin(BASE_URL, href)
-            if full_url in seen_ids:
+
+            if is_obvious_non_product_link(full_url):
                 continue
 
-            title = clean_title(link.inner_text().strip())
-            if not title or title == "Unknown item":
+            block_text = get_candidate_block_text(link)
+            if not block_text:
                 continue
 
-            card_text = ""
-            try:
-                card_text = link.locator("xpath=ancestor::article[1]").inner_text(timeout=2000)
-            except Exception:
-                try:
-                    card_text = link.locator("xpath=ancestor::div[1]").inner_text(timeout=2000)
-                except Exception:
-                    card_text = link.inner_text()
+            lower_block = block_text.lower()
 
-            price = extract_price(card_text)
+            # Keep this watcher focused on PSP items only
+            if "psp" not in lower_block:
+                continue
+
+            price = extract_price(block_text)
             if price < 0:
                 continue
 
+            title = clean_title(block_text)
+            if title == "Unknown item":
+                continue
+
+            if full_url in seen_ids:
+                continue
+
             seen_ids.add(full_url)
-            items.append({
+
+            item = {
                 "id": full_url,
                 "title": title,
                 "price": price,
                 "url": full_url,
-            })
+            }
+            items.append(item)
+
+            if debug_printed < 8:
+                print(f"Candidate item: {title} | £{price:.2f} | {full_url}")
+                debug_printed += 1
+
         except Exception as e:
             print(f"Failed parsing link {i}: {e}")
 
@@ -188,7 +249,6 @@ def get_page_items():
 
             page_items = scrape_products_from_page(page)
             print(f"Found {len(page_items)} products on page {page_num}")
-
             all_items.extend(page_items)
 
         page.screenshot(path="debug.png", full_page=True)
@@ -337,7 +397,6 @@ def main():
         message = format_message(added, removed, price_changed)
         if message:
             send_discord_message(message)
-
     else:
         print("No change")
 
