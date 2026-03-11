@@ -1,2 +1,2 @@
 # Cex-watcher
-Used to check for stock changes and notifications
+Used to monitor local stores for changes in stock of psp games every 20 minutes and report to discord
