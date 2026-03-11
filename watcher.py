@@ -1,4 +1,5 @@
 import os
+import re
 import json
 from pathlib import Path
 from urllib.parse import urlencode, urlparse, parse_qs, urlunparse, urljoin
@@ -9,6 +10,7 @@ from playwright.sync_api import sync_playwright
 URL = "https://uk.webuy.com/search?stext=psp&stores=Edinburgh~Edinburgh+Cameron+Toll~Leith+Edinburgh"
 STATE_FILE = Path("state.json")
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
+BASE_URL = "https://uk.webuy.com"
 
 
 def build_page_url(base_url: str, page_num: int) -> str:
@@ -20,108 +22,122 @@ def build_page_url(base_url: str, page_num: int) -> str:
 
 
 def extract_price(text: str) -> float:
-    for line in text.splitlines():
-        line = line.strip()
-        if line.startswith("£"):
-            try:
-                return float(line.replace("£", "").replace(",", "").strip())
-            except ValueError:
-                pass
-    return -1.0
+    match = re.search(r"£\s*([\d,]+(?:\.\d{2})?)", text)
+    if not match:
+        return -1.0
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return -1.0
 
 
-def extract_title(text: str) -> str:
+def clean_title(text: str) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
+    junk = {
+        "add to basket",
+        "add to wishlist",
+        "wishlist",
+        "5 year warranty",
+    }
 
-    filtered = []
+    cleaned = []
     for line in lines:
         lower = line.lower()
-
+        if lower in junk:
+            continue
         if line.startswith("£"):
             continue
-        if lower in {
-            "5 year warranty",
-            "add to basket",
-            "add to wishlist",
-            "wishlist",
-        }:
-            continue
-        if lower.replace(".", "", 1).isdigit():
-            continue
-        if lower.startswith("★"):
-            continue
+        cleaned.append(line)
 
-        filtered.append(line)
-
-    return filtered[0] if filtered else "Unknown item"
+    return cleaned[0] if cleaned else "Unknown item"
 
 
 def dismiss_cookie_banner(page):
     try:
-        accept_button = page.get_by_role("button", name="Accept All")
-        accept_button.wait_for(timeout=10000)
-        accept_button.click(force=True)
-        page.wait_for_timeout(2000)
-    except Exception as e:
-        print(f"Cookie banner not dismissed on click attempt: {e}")
-
-    try:
-        page.get_by_role("button", name="Accept All").wait_for(
-            state="hidden",
-            timeout=5000,
-        )
+        btn = page.get_by_role("button", name="Accept All")
+        btn.click(timeout=5000, force=True)
+        page.wait_for_timeout(1500)
         print("Cookie banner dismissed")
     except Exception:
-        print("Cookie banner still visible or not present")
+        print("Cookie banner not present or already dismissed")
 
 
 def get_page_count(page) -> int:
-    page_count = 1
+    nums = set()
 
     try:
-        links = page.locator("a[href*='page=']").all()
-        nums = []
-
-        for link in links:
-            try:
-                href = link.get_attribute("href")
-                if not href:
-                    continue
-
-                parsed = urlparse(href)
-                query = parse_qs(parsed.query)
-                if "page" in query:
-                    value = query["page"][0]
-                    if value.isdigit():
-                        nums.append(int(value))
-            except Exception:
-                pass
-
-        if nums:
-            page_count = max(nums)
+        for href in page.locator("a[href*='page=']").evaluate_all(
+            "(els) => els.map(e => e.getAttribute('href')).filter(Boolean)"
+        ):
+            parsed = urlparse(href)
+            query = parse_qs(parsed.query)
+            for val in query.get("page", []):
+                if val.isdigit():
+                    nums.add(int(val))
     except Exception as e:
-        print(f"Failed to detect page count cleanly: {e}")
+        print(f"Page count detection failed: {e}")
 
-    return max(page_count, 1)
+    return max(nums) if nums else 1
 
 
-def get_product_url(product):
-    possible_selectors = [
-        "a[href*='/product-detail']",
-        "a[href*='/product']",
-        "a",
-    ]
+def is_product_href(href: str) -> bool:
+    if not href:
+        return False
+    href_lower = href.lower()
+    return (
+        "/product-detail" in href_lower
+        or "/product/" in href_lower
+    )
 
-    for selector in possible_selectors:
+
+def scrape_products_from_page(page):
+    items = []
+
+    link_locator = page.locator("a[href]")
+    count = link_locator.count()
+    print(f"Found {count} total links on page")
+
+    seen_ids = set()
+
+    for i in range(count):
         try:
-            locator = product.locator(selector).first
-            href = locator.get_attribute("href")
-            if href:
-                return urljoin("https://uk.webuy.com", href)
-        except Exception:
-            pass
+            link = link_locator.nth(i)
+            href = link.get_attribute("href")
+            if not is_product_href(href):
+                continue
 
-    return None
+            full_url = urljoin(BASE_URL, href)
+            if full_url in seen_ids:
+                continue
+
+            title = clean_title(link.inner_text().strip())
+            if not title or title == "Unknown item":
+                continue
+
+            card_text = ""
+            try:
+                card_text = link.locator("xpath=ancestor::article[1]").inner_text(timeout=2000)
+            except Exception:
+                try:
+                    card_text = link.locator("xpath=ancestor::div[1]").inner_text(timeout=2000)
+                except Exception:
+                    card_text = link.inner_text()
+
+            price = extract_price(card_text)
+            if price < 0:
+                continue
+
+            seen_ids.add(full_url)
+            items.append({
+                "id": full_url,
+                "title": title,
+                "price": price,
+                "url": full_url,
+            })
+        except Exception as e:
+            print(f"Failed parsing link {i}: {e}")
+
+    return items
 
 
 def get_page_items():
@@ -138,10 +154,10 @@ def get_page_items():
         )
 
         page = context.new_page()
+
         first_url = build_page_url(URL, 1)
         print(f"Opening first page: {first_url}")
         page.goto(first_url, timeout=60000, wait_until="domcontentloaded")
-
         dismiss_cookie_banner(page)
         page.wait_for_timeout(4000)
 
@@ -170,34 +186,10 @@ def get_page_items():
                 print(f"Blocked by Cloudflare on page {page_num}")
                 continue
 
-            products = page.locator("div[data-testid='product-card']").all()
-            print(f"Found {len(products)} products on page {page_num}")
+            page_items = scrape_products_from_page(page)
+            print(f"Found {len(page_items)} products on page {page_num}")
 
-            for product in products:
-                try:
-                    text = product.inner_text().strip()
-                    if not text:
-                        continue
-
-                    title = extract_title(text)
-                    price = extract_price(text)
-                    product_url = get_product_url(product)
-
-                    if price < 0:
-                        continue
-                    if not product_url:
-                        print(f"Skipping item with no URL: {title}")
-                        continue
-
-                    all_items.append({
-                        "id": product_url,
-                        "title": title,
-                        "price": price,
-                        "url": product_url,
-                    })
-
-                except Exception as e:
-                    print(f"Failed to parse product: {e}")
+            all_items.extend(page_items)
 
         page.screenshot(path="debug.png", full_page=True)
         browser.close()
@@ -206,15 +198,16 @@ def get_page_items():
 
     deduped = []
     seen = set()
-
     for item in all_items:
-        key = item["id"]
-        if key not in seen:
-            seen.add(key)
+        if item["id"] not in seen:
+            seen.add(item["id"])
             deduped.append(item)
 
     print(f"Total scraped items before dedupe: {len(all_items)}")
     print(f"Total scraped items after dedupe: {len(deduped)}")
+
+    for item in deduped[:5]:
+        print(f"Sample item: {item['title']} | £{item['price']:.2f} | {item['url']}")
 
     return deduped
 
@@ -315,8 +308,7 @@ def format_message(added, removed, price_changed):
     if not parts:
         return ""
 
-    header = "**CeX PSP update**"
-    return header + "\n\n" + "\n\n".join(parts)
+    return "**CeX PSP update**\n\n" + "\n\n".join(parts)
 
 
 def main():
@@ -338,19 +330,18 @@ def main():
 
     added, removed, price_changed = diff_items(old_items, new_items)
 
-    print(
-        f"Added: {len(added)}, Removed: {len(removed)}, Price changed: {len(price_changed)}"
-    )
+    print(f"Added: {len(added)}, Removed: {len(removed)}, Price changed: {len(price_changed)}")
 
     if added or removed or price_changed:
         print("Change detected")
         message = format_message(added, removed, price_changed)
         if message:
             send_discord_message(message)
-        save_state(new_items)
+
     else:
         print("No change")
-        save_state(new_items)
+
+    save_state(new_items)
 
 
 if __name__ == "__main__":
