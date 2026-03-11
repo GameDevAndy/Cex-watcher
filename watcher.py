@@ -85,25 +85,30 @@ def get_page_count(page) -> int:
 def scrape_products_from_page(page):
     raw = page.evaluate("""
     () => {
-        const productLinks = Array.from(document.querySelectorAll('a[href*="/product-detail?id="]'));
+        const links = Array.from(document.querySelectorAll('a[href*="/product-detail?id="]'));
 
-        return productLinks.map(a => {
+        return links.map((a) => {
             const href = a.getAttribute('href') || '';
             const text = (a.innerText || a.textContent || '').trim();
 
-            let container =
-                a.closest('article') ||
-                a.closest('li') ||
-                a.parentElement;
+            let el = a;
+            let blockText = '';
+            let depth = 0;
 
-            let containerText = container
-                ? (container.innerText || container.textContent || '').trim()
-                : '';
+            while (el && depth < 8) {
+                const t = (el.innerText || el.textContent || '').trim();
+                if (t && t.includes('£')) {
+                    blockText = t;
+                    break;
+                }
+                el = el.parentElement;
+                depth += 1;
+            }
 
             return {
                 href,
                 text,
-                containerText
+                blockText
             };
         });
     }
@@ -115,31 +120,26 @@ def scrape_products_from_page(page):
     seen = set()
 
     for i, row in enumerate(raw):
-        href = row.get("href", "")
+        href = (row.get("href", "") or "").strip()
         text = (row.get("text", "") or "").strip()
-        container_text = (row.get("containerText", "") or "").strip()
+        block_text = (row.get("blockText", "") or "").strip()
 
-        if not href:
+        if not href or not text:
             continue
 
         full_url = urljoin(BASE_URL, href)
 
-        if i < 25:
-            print(f"DEBUG PRODUCT {i}: href={full_url} | text={text[:80]!r}")
-
-        # Skip the duplicate empty-text link; keep the titled one
-        if not text:
-            continue
+        if i < 20:
+            print(
+                f"DEBUG PRODUCT {i}: href={full_url} | "
+                f"text={text[:60]!r} | block={block_text[:120]!r}"
+            )
 
         title = clean_title(text)
         if title == "Unknown item":
             continue
 
-        price = extract_price(container_text)
-        if price < 0:
-            # fallback: inspect a slightly larger nearby block in JS
-            price = extract_price(text)
-
+        price = extract_price(block_text)
         if price < 0:
             continue
 
@@ -147,7 +147,6 @@ def scrape_products_from_page(page):
             continue
 
         seen.add(full_url)
-
         items.append({
             "id": full_url,
             "title": title,
