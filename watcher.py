@@ -149,17 +149,17 @@ def scrape_products_from_page(page):
 
         product_id = normalise_product_id(full_url)
 
-if product_id in seen:
-    continue
+        if product_id in seen:
+            continue
 
-seen.add(product_id)
+        seen.add(product_id)
 
-items.append({
-    "id": product_id,
-    "title": title,
-    "price": price,
-    "url": full_url,
-})
+        items.append({
+            "id": product_id,
+            "title": title,
+            "price": price,
+            "url": full_url,
+        })
 
     for item in items[:5]:
         print(f"Sample page item: {item['title']} | £{item['price']:.2f} | {item['url']}")
