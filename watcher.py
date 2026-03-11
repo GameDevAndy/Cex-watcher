@@ -29,7 +29,22 @@ def extract_price(text: str) -> float:
         return float(match.group(1).replace(",", ""))
     except ValueError:
         return -1.0
+        
+def extract_store(text: str) -> str:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
 
+    for i, line in enumerate(lines):
+        lower = line.lower()
+        if lower in {"nearest store:", "nearest store"}:
+            if i + 1 < len(lines):
+                return lines[i + 1]
+
+        if lower.startswith("nearest store:"):
+            parts = line.split(":", 1)
+            if len(parts) > 1 and parts[1].strip():
+                return parts[1].strip()
+
+    return "Unknown store"
 
 def clean_title(text: str) -> str:
     lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -147,6 +162,8 @@ def scrape_products_from_page(page):
         if price < 0:
             continue
 
+        store = extract_store(block_text)
+
         product_id = normalise_product_id(full_url)
 
         if product_id in seen:
@@ -158,6 +175,7 @@ def scrape_products_from_page(page):
             "id": product_id,
             "title": title,
             "price": price,
+            "store": store,
             "url": full_url,
         })
 
@@ -270,30 +288,28 @@ def send_discord_message(message: str):
         print(f"Failed to send Discord message: {e}")
 
 
-def diff_items(old_items, new_items):
-    old_by_id = {item["id"]: item for item in old_items if "id" in item}
-    new_by_id = {item["id"]: item for item in new_items if "id" in item}
-
-    added_ids = set(new_by_id.keys()) - set(old_by_id.keys())
-    removed_ids = set(old_by_id.keys()) - set(new_by_id.keys())
-
-    price_changed = []
+changes = []
     for item_id in set(old_by_id.keys()) & set(new_by_id.keys()):
         old_price = old_by_id[item_id]["price"]
         new_price = new_by_id[item_id]["price"]
-        if old_price != new_price:
-            price_changed.append({
+        old_store = old_by_id[item_id].get("store", "Unknown store")
+        new_store = new_by_id[item_id].get("store", "Unknown store")
+
+        if old_price != new_price or old_store != new_store:
+            changes.append({
                 "title": new_by_id[item_id]["title"],
                 "url": new_by_id[item_id]["url"],
                 "old_price": old_price,
                 "new_price": new_price,
+                "old_store": old_store,
+                "new_store": new_store,
             })
 
     added = sorted([new_by_id[i] for i in added_ids], key=lambda x: (-x["price"], x["title"].lower(), x["id"]))
     removed = sorted([old_by_id[i] for i in removed_ids], key=lambda x: (-x["price"], x["title"].lower(), x["id"]))
     price_changed = sorted(price_changed, key=lambda x: (-x["new_price"], x["title"].lower(), x["url"]))
 
-    return added, removed, price_changed
+    return added, removed, changed
 
 
 def format_message(added, removed, price_changed):
@@ -302,21 +318,30 @@ def format_message(added, removed, price_changed):
     if added:
         lines = ["**New items**"]
         for item in added[:15]:
-            lines.append(f"£{item['price']:.2f} — {item['title']}")
+            lines.append(
+                f"£{item['price']:.2f} — {item['title']} — {item.get('store', 'Unknown store')}"
+            )
             lines.append(item["url"])
         parts.append("\n".join(lines))
 
     if removed:
         lines = ["**Removed items**"]
         for item in removed[:15]:
-            lines.append(f"£{item['price']:.2f} — {item['title']}")
+            lines.append(
+                f"£{item['price']:.2f} — {item['title']} — {item.get('store', 'Unknown store')}"
+            )
             lines.append(item["url"])
         parts.append("\n".join(lines))
 
     if price_changed:
-        lines = ["**Price changes**"]
+        lines = ["**Price / store changes**"]
         for item in price_changed[:15]:
-            lines.append(f"{item['title']} — £{item['old_price']:.2f} → £{item['new_price']:.2f}")
+            old_store = item.get("old_store", "Unknown store")
+            new_store = item.get("new_store", "Unknown store")
+
+            lines.append(
+                f"{item['title']} — £{item['old_price']:.2f} → £{item['new_price']:.2f} | {old_store} → {new_store}"
+            )
             lines.append(item["url"])
         parts.append("\n".join(lines))
 
@@ -324,7 +349,6 @@ def format_message(added, removed, price_changed):
         return ""
 
     return "**CeX PSP update**\n\n" + "\n\n".join(parts)
-
 
 def main():
     try:
