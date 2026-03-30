@@ -36,7 +36,7 @@ jobs:
 
       - name: Ensure state file exists
         run: |
-          test -f state.json || echo "[]" > state.json
+          test -f state.json || echo "{}" > state.json
 
       - name: Run watcher
         run: python watcher.py
