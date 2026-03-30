@@ -7,7 +7,17 @@ from urllib.parse import urlencode, urlparse, parse_qs, urlunparse, urljoin
 import requests
 from playwright.sync_api import sync_playwright
 
-URL = "https://uk.webuy.com/search?stext=psp&stores=Edinburgh~Edinburgh+Cameron+Toll~Leith+Edinburgh"
+SEARCHES = {
+    "psp": {
+        "label": "PSP",
+        "url": "https://uk.webuy.com/search?stext=psp&stores=Edinburgh~Edinburgh+Cameron+Toll~Leith+Edinburgh",
+    },
+    "psvita": {
+        "label": "PS Vita",
+        "url": "https://uk.webuy.com/search?stext=ps+vita&stores=Edinburgh~Edinburgh+Cameron+Toll~Leith+Edinburgh",
+    },
+}
+
 STATE_FILE = Path("state.json")
 WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 BASE_URL = "https://uk.webuy.com"
@@ -81,10 +91,12 @@ def get_page_count(page) -> int:
 
     return max(nums) if nums else 1
 
+
 def normalise_product_id(product_url: str) -> str:
     parsed = urlparse(product_url)
     query = parse_qs(parsed.query)
     return query.get("id", [product_url])[0]
+
 
 def scrape_products_from_page(page):
     raw = page.evaluate("""
@@ -167,7 +179,7 @@ def scrape_products_from_page(page):
     return items
 
 
-def get_page_items():
+def get_page_items(search_url: str, debug_prefix: str):
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
@@ -182,7 +194,7 @@ def get_page_items():
 
         page = context.new_page()
 
-        first_url = build_page_url(URL, 1)
+        first_url = build_page_url(search_url, 1)
         print(f"Opening first page: {first_url}")
         page.goto(first_url, timeout=60000, wait_until="domcontentloaded")
         dismiss_cookie_banner(page)
@@ -190,7 +202,7 @@ def get_page_items():
 
         body_text = page.locator("body").inner_text()
         if "Performing security verification" in body_text or "Verify you are human" in body_text:
-            page.screenshot(path="debug.png", full_page=True)
+            page.screenshot(path=f"debug-{debug_prefix}.png", full_page=True)
             browser.close()
             raise RuntimeError("Blocked by Cloudflare")
 
@@ -200,7 +212,7 @@ def get_page_items():
         all_items = []
 
         for page_num in range(1, page_count + 1):
-            url = build_page_url(URL, page_num)
+            url = build_page_url(search_url, page_num)
             print(f"Checking page {page_num}: {url}")
 
             page.goto(url, timeout=60000, wait_until="domcontentloaded")
@@ -209,7 +221,7 @@ def get_page_items():
 
             body_text = page.locator("body").inner_text()
             if "Performing security verification" in body_text or "Verify you are human" in body_text:
-                page.screenshot(path=f"debug-page-{page_num}.png", full_page=True)
+                page.screenshot(path=f"debug-{debug_prefix}-page-{page_num}.png", full_page=True)
                 print(f"Blocked by Cloudflare on page {page_num}")
                 continue
 
@@ -217,7 +229,7 @@ def get_page_items():
             print(f"Found {len(page_items)} products on page {page_num}")
             all_items.extend(page_items)
 
-        page.screenshot(path="debug.png", full_page=True)
+        page.screenshot(path=f"debug-{debug_prefix}.png", full_page=True)
         browser.close()
 
     all_items.sort(key=lambda x: (-x["price"], x["title"].lower(), x["id"]))
@@ -238,19 +250,22 @@ def get_page_items():
     return deduped
 
 
-def load_old():
+def load_state():
     if STATE_FILE.exists():
         try:
             data = json.loads(STATE_FILE.read_text())
-            if isinstance(data, list):
+            if isinstance(data, dict):
                 return data
+            if isinstance(data, list):
+                # migrate old single-search format
+                return {"psp": data}
         except Exception as e:
             print(f"Failed to load state.json: {e}")
-    return []
+    return {}
 
 
-def save_state(items):
-    STATE_FILE.write_text(json.dumps(items, indent=2))
+def save_state(state):
+    STATE_FILE.write_text(json.dumps(state, indent=2))
 
 
 def send_discord_message(message: str):
@@ -296,7 +311,7 @@ def diff_items(old_items, new_items):
     return added, removed, price_changed
 
 
-def format_message(added, removed, price_changed):
+def format_message(search_label, added, removed, price_changed):
     parts = []
 
     if added:
@@ -323,39 +338,49 @@ def format_message(added, removed, price_changed):
     if not parts:
         return ""
 
-    return "**CeX PSP update**\n\n" + "\n\n".join(parts)
+    return f"**CeX {search_label} update**\n\n" + "\n\n".join(parts)
 
 
 def main():
-    try:
-        new_items = get_page_items()
-    except Exception as e:
-        print(f"Run failed: {e}")
-        return
+    state = load_state()
 
-    old_items = load_old()
+    for search_key, config in SEARCHES.items():
+        print(f"\n=== Running search: {config['label']} ===")
 
-    print(f"Loaded old items: {len(old_items)}")
-    print(f"Scraped new items: {len(new_items)}")
+        try:
+            new_items = get_page_items(config["url"], search_key)
+        except Exception as e:
+            print(f"Run failed for {config['label']}: {e}")
+            continue
 
-    if not old_items:
-        print("First run: saving baseline")
-        save_state(new_items)
-        return
+        old_items = state.get(search_key, [])
 
-    added, removed, price_changed = diff_items(old_items, new_items)
+        print(f"Loaded old items for {config['label']}: {len(old_items)}")
+        print(f"Scraped new items for {config['label']}: {len(new_items)}")
 
-    print(f"Added: {len(added)}, Removed: {len(removed)}, Price changed: {len(price_changed)}")
+        if not old_items:
+            print(f"First run for {config['label']}: saving baseline")
+            state[search_key] = new_items
+            continue
 
-    if added or removed or price_changed:
-        print("Change detected")
-        message = format_message(added, removed, price_changed)
-        if message:
-            send_discord_message(message)
-    else:
-        print("No change")
+        added, removed, price_changed = diff_items(old_items, new_items)
 
-    save_state(new_items)
+        print(
+            f"{config['label']} -> Added: {len(added)}, "
+            f"Removed: {len(removed)}, Price changed: {len(price_changed)}"
+        )
+
+        if added or removed or price_changed:
+            print(f"Change detected for {config['label']}")
+            message = format_message(config["label"], added, removed, price_changed)
+            if message:
+                send_discord_message(message)
+        else:
+            print(f"No change for {config['label']}")
+
+        state[search_key] = new_items
+
+    save_state(state)
 
 
 if __name__ == "__main__":
